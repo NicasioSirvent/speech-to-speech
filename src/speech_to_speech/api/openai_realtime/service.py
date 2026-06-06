@@ -275,8 +275,8 @@ class RealtimeService:
     def handle_audio_commit(self, conn_id: str) -> RealtimeErrorEvent | None:
         return self.audio.handle_audio_commit(conn_id)
 
-    def encode_audio_chunk(self, conn_id: str, audio: bytes) -> list[ServerEvent]:
-        return self.audio.encode_audio_chunk(conn_id, audio)
+    async def encode_audio_chunk(self, conn_id: str, audio: bytes) -> list[ServerEvent]:
+        return await self.audio.encode_audio_chunk(conn_id, audio)
 
     def handle_response_create(self, conn_id: str, event: ResponseCreateEvent) -> ServerEvent | None:
         return self.response.handle_response_create(conn_id, event)
