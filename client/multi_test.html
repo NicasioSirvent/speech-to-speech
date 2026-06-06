@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Multi-User Test Client</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #111; color: #eee; }
+        .actor-btn { padding: 10px 20px; font-size: 1rem; margin: 5px; cursor: pointer; border: none; border-radius: 8px; color: #fff; }
+        .actor-btn.carlos { background-color: #e74c3c; }
+        .actor-btn.luisa { background-color: #3498db; }
+        .actor-btn.javier { background-color: #2ecc71; }
+        .actor-btn.dramaturgo { background-color: #9b59b6; }
+        .actor-btn.active { border: 4px solid #fff; box-shadow: 0 0 10px #fff; }
+        #status { margin: 20px 0; padding: 10px; background: #333; border-radius: 8px; }
+        #transcript { height: 300px; overflow-y: auto; background: #222; padding: 10px; border-radius: 8px; margin-top: 20px; border: 1px solid #444; }
+        .message { margin-bottom: 10px; padding: 5px; border-left: 4px solid #555; }
+        .user-msg { color: #f1c40f; border-left-color: #f1c40f; }
+        .ai-msg { color: #81ecec; border-left-color: #81ecec; }
+        .sys-msg { color: #95a5a6; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>Multi-User Test Sandbox</h1>
+    
+    <div style="margin-bottom: 20px;">
+        <h3>Selecciona el actor:</h3>
+        <button class="actor-btn carlos" onclick="setActor('carlos')">Carlos</button>
+        <button class="actor-btn luisa" onclick="setActor('luisa')">Luisa</button>
+        <button class="actor-btn javier" onclick="setActor('javier')">Javier</button>
+        <button class="actor-btn dramaturgo" onclick="setActor('dramaturgo')">Dramaturgo</button>
+    </div>
+
+    <div id="status">Selecciona un actor y pulsa el micrófono</div>
+    <button id="startBtn" style="padding: 10px 20px; font-size: 1.2rem; cursor: pointer;">🎙️ Iniciar Charla</button>
+
+    <div id="transcript"></div>
+
+    <script>
+        let ws;
+        let sampleRate = 16000;
+        let currentActor = null;
+        let audioCtx, micStream, scriptNode;
+        let isRecording = false;
+        const transcriptEl = document.getElementById('transcript');
+        const statusEl = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
+
+        function setActor(actor) {
+            currentActor = actor;
+            document.querySelectorAll('.actor-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`.actor-btn.${actor}`).classList.add('active');
+            statusEl.innerText = `Actor activo: ${actor.toUpperCase()}`;
+            addLog(`Sistema: Actor ${actor} seleccionado.`, 'sys-msg');
+        }
+
+        function addLog(text, className) {
+            const div = document.createElement('div');
+            div.className = `message ${className}`;
+            div.innerText = text;
+            transcriptEl.appendChild(div);
+            transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        }
+
+        async function startRecording() {
+            if (!currentActor) {
+                statusEl.innerText = "⚠️ Selecciona un actor primero.";
+                return;
+            }
+
+            try {
+                statusEl.innerText = "Solicitando micrófono...";
+                micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: sampleRate });
+                const source = audioCtx.createMediaStreamSource(micStream);
+                scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+
+                source.connect(scriptNode);
+                scriptNode.connect(audioCtx.destination);
+
+                ws = new WebSocket(`ws://${location.host}/v1/realtime`);
+                
+                ws.onopen = () => {
+                    ws.send(JSON.stringify({
+                        type: "session.update",
+                        session: {
+                            modalities: ["text", "audio"],
+                            instructions: "Eres un asistente en una sala compartida. Identifica al usuario que habla y responde en consecuencia. Si alguien te pide que hables como otro, hazlo.",
+                            turn_detection: { type: "server_vad" }
+                        }
+                    }));
+                    isRecording = true;
+                    startBtn.innerText = "🛑 Detener Charla";
+                    startBtn.onclick = stopRecording;
+                    statusEl.innerText = "Escuchando...";
+                };
+
+                ws.onmessage = async (event) => {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'conversation.item.input_audio_transcription.completed') {
+                        addLog(`${currentActor.toUpperCase()}: "${msg.transcript}"`, 'user-msg');
+                    } else if (msg.type === 'response.output_audio_transcript.done') {
+                        addLog(`ASISTENTE: "${msg.transcript}"`, 'ai-msg');
+                    } else if (msg.type === 'error') {
+                        addLog(`Error: ${msg.message}`, 'sys-msg');
+                    }
+                };
+
+                scriptNode.onaudioprocess = (e) => {
+                    if (!ws || !isRecording) return;
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const pcm = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        pcm[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+                    }
+                    const u8 = new Uint8Array(pcm.buffer);
+                    let bin = '';
+                    u8.forEach(b => bin += String.fromCharCode(b));
+                    ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: btoa(bin) }));
+                };
+
+            } catch (err) {
+                statusEl.innerText = `Error: ${err.message}`;
+            }
+        }
+
+        function stopRecording() {
+            isRecording = false;
+            if (ws) ws.close();
+            if (source) source.disconnect();
+            if (scriptNode) scriptNode.disconnect();
+            if (audioCtx) audioCtx.close();
+            startBtn.innerText = "🎙️ Iniciar Charla";
+            startBtn.onclick = startRecording;
+            statusEl.innerText = "Charla detenida.";
+        }
+
+        startBtn.onclick = startRecording;
+    </script>
+</body>
+</html>
