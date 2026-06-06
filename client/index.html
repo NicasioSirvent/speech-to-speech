@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="icon" href="icon-192.png" type="image/png">
+    <title>Voice Agent</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100vh; min-height: 100dvh;
+            background: #0a0a0a; color: #e0e0e0;
+        }
+        #orb {
+            width: 120px; height: 120px; border-radius: 50%;
+            background: radial-gradient(circle, #1a1a2e, #16213e);
+            box-shadow: 0 0 30px rgba(0, 123, 255, 0.1);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 3em; transition: all 0.3s;
+            margin-bottom: 30px;
+        }
+        #orb.listening {
+            background: radial-gradient(circle, #1b5e20, #2e7d32);
+            box-shadow: 0 0 40px rgba(76, 175, 80, 0.4);
+            animation: pulse 2s infinite;
+        }
+        #orb.speaking {
+            background: radial-gradient(circle, #1565c0, #1976d2);
+            box-shadow: 0 0 40px rgba(33, 150, 243, 0.4);
+            animation: pulse 0.5s infinite;
+        }
+        #orb.processing {
+            background: radial-gradient(circle, #e65100, #ef6c00);
+            box-shadow: 0 0 40px rgba(255, 152, 0, 0.3);
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.08); }
+        }
+        #status {
+            font-size: 1.1em; color: #777; margin-bottom: 15px;
+            min-height: 1.5em; text-align: center;
+        }
+        #transcript {
+            font-size: 1em; color: #bbb; max-width: 85%; min-height: 60px;
+            text-align: center; padding: 0 15px; line-height: 1.6;
+            margin-bottom: 30px;
+            max-height: 200px; overflow-y: auto;
+        }
+        #start-btn {
+            padding: 16px 48px; font-size: 1.2em;
+            background: #007bff; color: white; border: none;
+            border-radius: 50px; cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0, 123, 255, 0.3);
+            transition: all 0.2s;
+        }
+        #start-btn:active { transform: scale(0.96); }
+        .history-item { margin-bottom: 15px; }
+        .user-q { color: #81c784; font-size: 0.9em; }
+        .ai-a { color: #64b5f6; }
+    </style>
+</head>
+<body>
+    <div id="orb" onclick="toggleConfig()">🎙️</div>
+    <div id="status">Presiona Start para comenzar</div>
+    <div id="transcript"></div>
+    <button id="start-btn">Start Call</button>
+    <button id="stop-btn" style="display:none; padding:10px 24px; font-size:1em; background:#dc3545; color:white; border:none; border-radius:50px; cursor:pointer; margin-bottom:15px;">✖ Cancel</button>
+    <div id="config" style="display:none; margin-top:20px; padding:15px; background:#151515; border-radius:12px; max-width:90%;">
+        <label style="display:block; font-size:0.85em; color:#888; margin:8px 0 4px;">Server IP (APK mode)</label>
+        <input type="text" id="ws-host" placeholder="192.168.x.x" style="width:100%; padding:8px; background:#222; color:#ddd; border:1px solid #333; border-radius:8px;">
+        <label style="display:block; font-size:0.85em; color:#888; margin:8px 0 4px;">Puerto WS</label>
+        <input type="text" id="ws-port" value="8765" style="width:100%; padding:8px; background:#222; color:#ddd; border:1px solid #333; border-radius:8px;">
+        <label style="display:block; font-size:0.85em; color:#888; margin:8px 0 4px;">System Prompt</label>
+        <textarea id="system-prompt" style="width:100%; padding:8px; background:#222; color:#ddd; border:1px solid #333; border-radius:8px; min-height:60px; resize:vertical;">Eres un asistente de IA útil y amigable. Habla siempre en español de manera natural y concisa.</textarea>
+    </div>
+
+    <script>
+        const SAMPLE_RATE = 16000;
+        const BUFFER_SIZE = 4096;
+
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const statusEl = document.getElementById('status');
+        const transcriptEl = document.getElementById('transcript');
+        const orbEl = document.getElementById('orb');
+        const configEl = document.getElementById('config');
+
+        let ws;
+        let audioQueue = [];
+        let isPlaying = false;
+        let currentTranscript = '';
+        let micActive = false;
+        let micTimeout = null;
+        let micUnmuteDelay = null;
+        let currentSource = null;
+
+        stopBtn.onclick = () => {
+            stopAudio();
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "response.cancel" }));
+            }
+            setState('listening');
+            statusEl.innerText = "Cancelado";
+        };
+
+        function toggleConfig() {
+            configEl.style.display = configEl.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function setState(state) {
+            orbEl.className = state;
+            const icons = { listening: '👂', speaking: '🔊', processing: '⚙️', '': '🎙️' };
+            orbEl.innerText = icons[state] || '🎙️';
+            stopBtn.style.display = (state === 'speaking' || state === 'processing' || isPlaying) ? 'inline-block' : 'none';
+        }
+
+        startBtn.onclick = async () => {
+            try {
+                statusEl.innerText = "Solicitando micrófono...";
+
+                /* Raw audio, no AEC — let server VAD handle turn detection */
+                const constraints = {
+                    audio: {
+                        echoCancellation:  false,
+                        noiseSuppression:  false,
+                        autoGainControl:   false,
+                        channelCount:      { exact: 1 },
+                        sampleRate:        { ideal: SAMPLE_RATE },
+                        latency:           { ideal: 0 },
+                    },
+                    video: false
+                };
+
+                micStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+
+                const source = audioCtx.createMediaStreamSource(micStream);
+                const script = audioCtx.createScriptProcessor(BUFFER_SIZE, 1, 1);
+
+                script.onaudioprocess = (e) => {
+                    // Block mic: while TTS is playing OR during grace period after
+                    if (isPlaying || micUnmuteDelay) return;
+                    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                    const inputData = e.inputBuffer.getChannelData(0);
+
+                    const pcm = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        const s = Math.max(-1, Math.min(1, inputData[i]));
+                        pcm[i] = s < 0 ? Math.floor(s * 0x8000) : Math.floor(s * 0x7FFF);
+                    }
+
+                    let bin = '';
+                    const u8 = new Uint8Array(pcm.buffer);
+                    for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+                    const b64 = btoa(bin);
+                    ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: b64 }));
+                };
+                source.connect(script);
+                script.connect(audioCtx.destination);
+
+                openWebSocket();
+                startBtn.style.display = 'none';
+            } catch (err) {
+                statusEl.innerText = "Error: " + err.message;
+            }
+        };
+
+        function openWebSocket() {
+            const port = document.getElementById('ws-port').value;
+            const customHost = document.getElementById('ws-host').value.trim();
+
+            let host = location.hostname;
+
+            if (location.protocol === 'file:' || customHost) {
+                host = customHost || prompt('Enter server IP (e.g., 192.168.1.100):');
+            }
+
+            const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsPort = (location.protocol === 'https:' && !customHost) ? '' : (port ? `:${port}` : ':8765');
+            ws = new WebSocket(`${proto}://${host}${wsPort}/v1/realtime`);
+
+            ws.onopen = () => {
+                const instructions = document.getElementById('system-prompt').value;
+                ws.send(JSON.stringify({
+                    type: "session.update",
+                    session: {
+                        type: "realtime",
+                        modalities: ["text", "audio"],
+                        instructions: instructions,
+                        turn_detection: {
+                            type: "server_vad",
+                            create_response: true
+                        }
+                    }
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                if (event.data.constructor.name === 'Blob') {
+                    event.data.arrayBuffer().then(playPCM);
+                } else if (event.data instanceof ArrayBuffer) {
+                    playPCM(event.data);
+                } else {
+                    const msg = JSON.parse(event.data);
+                    handleEvent(msg);
+                }
+            };
+
+            ws.onclose = () => {
+                statusEl.innerText = "Desconectado";
+                setState('');
+                startBtn.style.display = 'block';
+                startBtn.innerText = "Reintentar";
+            };
+        }
+
+        function playPCM(buffer) {
+            const pcm = new Int16Array(buffer);
+            const buf = audioCtx.createBuffer(1, pcm.length, SAMPLE_RATE);
+            const ch = buf.getChannelData(0);
+            for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768.0;
+            audioQueue.push({ buffer: buf });
+            if (!isPlaying) playNext();
+        }
+
+        function playNext() {
+            if (!audioQueue.length) {
+                isPlaying = false;
+                currentSource = null;
+                // Grace period: keep mic blocked 300ms after last chunk ends
+                // to let speaker DAC buffer drain and prevent echo bleed
+                if (micUnmuteDelay) clearTimeout(micUnmuteDelay);
+                micUnmuteDelay = setTimeout(() => {
+                    micUnmuteDelay = null;
+                }, 300);
+                return;
+            }
+            isPlaying = true;
+            const item = audioQueue.shift();
+            const src = audioCtx.createBufferSource();
+            src.buffer = item.buffer;
+            src.connect(audioCtx.destination);
+            src.onended = playNext;
+            currentSource = src;
+            src.start();
+        }
+
+        function stopAudio() {
+            if (currentSource) {
+                try { currentSource.stop(); } catch(e) {}
+                currentSource = null;
+            }
+            audioQueue = [];
+            isPlaying = false;
+            // Grace period after interrupt too
+            if (micUnmuteDelay) clearTimeout(micUnmuteDelay);
+            micUnmuteDelay = setTimeout(() => {
+                micUnmuteDelay = null;
+            }, 300);
+        }
+
+        function addTranscript(userText, aiText) {
+            if (userText || aiText) {
+                const div = document.createElement('div');
+                div.className = 'history-item';
+                if (userText) div.innerHTML += `<span class="user-q">🎤 ${userText}</span><br>`;
+                if (aiText) div.innerHTML += `<span class="ai-a">🤖 ${aiText}</span><br>`;
+                transcriptEl.appendChild(div);
+                transcriptEl.scrollTop = transcriptEl.scrollHeight;
+            }
+            currentTranscript = '';
+        }
+
+        function handleEvent(msg) {
+            switch(msg.type) {
+                case 'error':
+                    statusEl.innerText = "Error: " + (msg.message || msg);
+                    break;
+                case 'session.created':
+                    statusEl.innerText = "Escuchando...";
+                    setState('listening');
+                    break;
+                case 'input_audio_buffer.speech_started':
+                    setState('listening');
+                    stopAudio();
+                    break;
+                case 'input_audio_buffer.speech_stopped':
+                    statusEl.innerText = "Pensando...";
+                    setState('processing');
+                    break;
+                case 'conversation.item.input_audio_transcription.delta':
+                    currentTranscript += msg.delta;
+                    break;
+                case 'conversation.item.input_audio_transcription.completed':
+                    currentTranscript = msg.transcript || currentTranscript;
+                    break;
+                case 'response.output_audio.delta':
+                    statusEl.innerText = "Hablando...";
+                    setState('speaking');
+                    const b = atob(msg.delta);
+                    const bts = new Uint8Array(b.length);
+                    for (let i = 0; i < b.length; i++) bts[i] = b.charCodeAt(i);
+                    playPCM(bts.buffer);
+                    break;
+                case 'response.output_audio_transcript.done':
+                    const aiText = msg.transcript || '';
+                    addTranscript(currentTranscript ? `🎤 ${currentTranscript}` : '', aiText ? `🤖 ${aiText}` : '');
+                    currentTranscript = '';
+                    break;
+                case 'response.done':
+                    statusEl.innerText = "Escuchando...";
+                    setState('listening');
+                    if (msg.response && msg.response.status && msg.response.status.startsWith('cancel')) {
+                        stopAudio();
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(registrations => {
+                registrations.forEach(reg => reg.unregister());
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from typing import TYPE_CHECKING
@@ -148,9 +149,13 @@ class AudioHandler(RealtimeBaseHandler):
             )
         ]
 
-    # ── Outbound audio encoding ──────────────────
+    @staticmethod
+    def _encode_audio_bytes(audio_bytes: bytes, from_rate: int, to_rate: int) -> str:
+        """CPU-heavy resample + base64 encode. Runs in a ThreadPoolExecutor."""
+        resampled = resample(audio_bytes, from_rate, to_rate)
+        return base64.b64encode(resampled).decode("ascii")
 
-    def encode_audio_chunk(self, conn_id: str, audio: bytes) -> list[ServerEvent]:
+    async def encode_audio_chunk(self, conn_id: str, audio: bytes) -> list[ServerEvent]:
         """Encode a raw PCM audio chunk, emitting ResponseCreated on the first chunk.
 
         When ``handle_response_create`` already allocated the response,
@@ -183,8 +188,9 @@ class AudioHandler(RealtimeBaseHandler):
                 client_out_rate = getattr(audio_cfg.output.format, "rate", None) or PIPELINE_SAMPLE_RATE
             else:
                 client_out_rate = PIPELINE_SAMPLE_RATE
-        audio = resample(audio, PIPELINE_SAMPLE_RATE, client_out_rate)
-        b64 = base64.b64encode(audio).decode("ascii")
+        b64 = await asyncio.to_thread(
+            self._encode_audio_bytes, audio, PIPELINE_SAMPLE_RATE, client_out_rate
+        )
         events.append(
             ResponseAudioDeltaEvent(
                 type="response.output_audio.delta",

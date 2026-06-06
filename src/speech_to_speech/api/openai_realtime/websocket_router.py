@@ -35,7 +35,7 @@ from speech_to_speech.pipeline.log_context import pipeline_log_ctx
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
 
 logger = logging.getLogger(__name__)
-MAX_AUDIO_BATCH_BYTES = 6400
+MAX_AUDIO_BATCH_BYTES = 16000
 # How long the release path waits for SESSION_END to propagate through the
 # handler chain back to output_queue before clearing unit.session. Tests
 # monkeypatch this to a small value since their fixtures usually skip the
@@ -551,7 +551,8 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
                         unit.should_listen.set()
 
                     if ws is not None and session_id:
-                        await _send_events(ws, unit.service.encode_audio_chunk(session_id, bytes(audio_batch)))
+                        audio_events = await unit.service.encode_audio_chunk(session_id, bytes(audio_batch))
+                        await _send_events(ws, audio_events)
                 except Empty:
                     pass
 

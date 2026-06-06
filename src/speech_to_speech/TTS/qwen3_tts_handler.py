@@ -39,7 +39,7 @@ console = Console()
 DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
 DEFAULT_REF_TEXT = "I'm confused why some people have super short timelines, yet at the same time are bullish on scaling up reinforcement learning atop LLMs. If we're actually close to a human-like learner, then this whole approach of training on verifiable outcomes."
-DEFAULT_FASTER_STREAMING_CHUNK_SIZE = 8
+DEFAULT_FASTER_STREAMING_CHUNK_SIZE = 32
 DEFAULT_MLX_STREAMING_CHUNK_SIZE = 4
 DEFAULT_QWEN3_TTS_MAX_NEW_TOKENS = 1536
 MIN_QWEN3_TTS_UTTERANCE_TOKENS = 360
@@ -171,7 +171,8 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
 
         self._initial_speaker = self.speaker
         self._initial_ref_audio = self.ref_audio
-
+        self._voice_clone_prompt = None
+        self._setup_voice_cache()
         self.warmup()
 
     def _setup_faster(self, model_name: str, dtype: Any, attn_implementation: str) -> None:
@@ -471,10 +472,52 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             get_speakers = getattr(candidate, "get_supported_speakers", None)
             if callable(get_speakers):
                 speakers = get_speakers()
-                if speakers is None:
-                    return None
-                return [str(speaker) for speaker in speakers if speaker]
+                if speakers is not None:
+                    return [str(s) for s in speakers if s]
         return None
+
+    def _setup_voice_cache(self) -> None:
+        import hashlib
+        import torch
+        from pathlib import Path
+
+        voice_cache_dir = Path(__file__).parent / "voices"
+        voice_cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        resolved = self._resolve_audio_path(self.ref_audio)
+        if resolved:
+            cache_key = hashlib.md5(str(resolved).encode()).hexdigest()
+            cache_file = voice_cache_dir / f"{cache_key}.safetensors"
+        else:
+            cache_files = list(voice_cache_dir.glob("*.safetensors"))
+            if not cache_files:
+                logger.info("No ref_audio and no voice cache found. Voice cloning disabled.")
+                return
+            cache_file = cache_files[0]
+        if cache_file.exists():
+            data = torch.load(str(cache_file), map_location=self.device, weights_only=False)
+            self._voice_clone_prompt = data["voice_clone_prompt"]
+            self.ref_audio = None # Use cache instead of full audio
+            logger.info(f"Qwen3-TTS voice clone prompt loaded from cache: {cache_file}")
+            return
+
+        # No cache - need ref_audio to extract
+        if not resolved:
+            logger.info("No ref_audio and no voice cache. Voice cloning disabled.")
+            return
+
+        inner_model = self.model.model
+        prompt_items = inner_model.create_voice_clone_prompt(
+            ref_audio=str(resolved),
+            ref_text=self.ref_text,
+            x_vector_only_mode=self.xvec_only,
+        )
+        vcp = inner_model._prompt_items_to_voice_clone_prompt(prompt_items)
+        self._voice_clone_prompt = vcp
+        torch.save({
+            "voice_clone_prompt": vcp,
+            "ref_text": self.ref_text,
+        }, str(cache_file))
 
     def _resolve_speaker(self) -> Optional[str]:
         if self.speaker:
@@ -700,7 +743,7 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         console.print(f"[green]ASSISTANT: {text}")
 
         try:
-            if self.ref_audio:
+            if self.ref_audio or self._voice_clone_prompt:
                 audio_iter = self._process_voice_clone(text)
             elif model_type == "custom_voice":
                 audio_iter = self._process_custom_voice(text)
@@ -782,19 +825,23 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             )
             return
 
+        vcp = self._voice_clone_prompt
+        label = "voice_clone_cached" if vcp else ("voice_clone_parity" if self.parity_mode else "voice_clone")
         yield from self._stream(
             self.model.generate_voice_clone_streaming(
                 text=text,
                 language=self.language,
-                ref_audio=self.ref_audio,
-                ref_text=self.ref_text,
+                ref_audio=self.ref_audio if not vcp else None,
+                ref_text="" if vcp else self.ref_text,
                 xvec_only=self.xvec_only,
+                voice_clone_prompt=vcp,
+                temperature=1.1,
                 chunk_size=self.streaming_chunk_size,
                 max_new_tokens=utterance_max_new_tokens,
                 parity_mode=self.parity_mode,
                 non_streaming_mode=self.non_streaming_mode,
             ),
-            label="voice_clone_parity" if self.parity_mode else "voice_clone",
+            label=label,
         )
 
     def _process_custom_voice(self, text: str) -> Iterator[bytes | np.ndarray]:
