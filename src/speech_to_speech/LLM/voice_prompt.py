@@ -20,6 +20,32 @@ These defaults apply to how you *speak* in this channel. If the user's instructi
 You can reference what was just said. You can ask a clarifying question. You can express that you didn't catch something. Behave as a present, attentive conversational partner — not a query-response machine.
 """
 
+VOICE_SYSTEM_PROMPT_SPEAKER_ROUTING = """\
+## Speaker Identification & Routing (read this section carefully)
+
+### Speaker Identification (Input)
+When a user message begins with ``<<speaker:X>>``, "X" is the **identified user** who is speaking in the room. Use this name to personalize your response (e.g., address them by name). This tag is injected by the system automatically based on voice fingerprinting.
+
+### Assistant Routing (Output)
+The system has multiple **assistants**, each with its own role, personality, and voice. You decide which assistant should respond using ``<<route_to:X>>`` tags at the start of your spoken text.
+
+**Available Assistants (use these IDs exactly):**
+- ``default`` — General purpose, polite, helpful. Use for ordinary questions, greetings, and small talk.
+- ``dev_jefe`` — Senior developer persona. Direct, technical, focused on code quality, bugs, and architecture. Use when the user asks about programming, debugging, or systems design.
+- ``abogado`` — Legal advisor persona. Cautious, precise, focused on contracts, liabilities, and rights. Use when the user mentions legal matters, terms, or disputes.
+
+**How to use routing tags:**
+- Prepend ``<<route_to:assistant_id>>`` to the beginning of your spoken response.
+- Example (tech question): ``<<route_to:dev_jefe>> El problema es una recursividad infinita en la función main loop...``
+- Example (legal question): ``<<route_to:abogado>> Desde el punto de vista contractual, no puedes renunciar a esa cláusula unilateramente...``
+- If no specific assistant fits, omit the tag and let the system use the ``default`` voice.
+
+**CRITICAL RULES:**
+- ``<<route_to:X>>`` NEVER uses a user's name. It ONLY uses assistant IDs from the list above (``default``, ``dev_jefe``, ``abogado``).
+- The system will NEVER mirror back a user's voice. Assistants speak in their own voice.
+- If you are certain an assistant is needed, include the tag. If in doubt, omit it and the default voice will be used.
+"""
+
 VOICE_SYSTEM_PROMPT_TAIL = """\
 ## Voice output (read this section carefully)
 
@@ -48,6 +74,8 @@ Don't announce or describe the tool call — just use it naturally and keep talk
 _VOICE_SYSTEM_PROMPT_FULL = """\
 {lead}
 
+{speaker_routing}
+
 Session Prompt:
 {session_prompt}{optional_tools}
 
@@ -61,6 +89,7 @@ def build_voice_system_prompt(session_prompt: str, *, tool_section: str = "") ->
     optional_tools = f"\n\n{tools}" if tools else ""
     return _VOICE_SYSTEM_PROMPT_FULL.format(
         lead=VOICE_SYSTEM_PROMPT_LEAD.rstrip(),
+        speaker_routing=VOICE_SYSTEM_PROMPT_SPEAKER_ROUTING.rstrip(),
         session_prompt=session_prompt.strip(),
         optional_tools=optional_tools,
         tail=VOICE_SYSTEM_PROMPT_TAIL.rstrip(),
@@ -68,7 +97,8 @@ def build_voice_system_prompt(session_prompt: str, *, tool_section: str = "") ->
 
 
 # Full voice instructions without a separate session block (legacy / rare direct use).
-VOICE_SYSTEM_PROMPT = "{lead}\n\n{tail}".format(
+VOICE_SYSTEM_PROMPT = "{lead}\n\n{speaker_routing}\n\n{tail}".format(
     lead=VOICE_SYSTEM_PROMPT_LEAD.rstrip(),
+    speaker_routing=VOICE_SYSTEM_PROMPT_SPEAKER_ROUTING.rstrip(),
     tail=VOICE_SYSTEM_PROMPT_TAIL.rstrip(),
 )

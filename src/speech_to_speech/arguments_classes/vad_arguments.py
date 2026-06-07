@@ -1,4 +1,8 @@
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from speech_to_speech.VAD.speaker_registry import SpeakerRegistry
 
 
 @dataclass
@@ -61,3 +65,4 @@ class VADHandlerArguments:
             "help": "In realtime mode, keep a soft-ended turn reopenable for this many milliseconds unless a response commits it."
         },
     )
+    speaker_registry: Optional["SpeakerRegistry"] = None

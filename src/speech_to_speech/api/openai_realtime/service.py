@@ -168,6 +168,7 @@ class ConnState(BaseModel):
     speculative_user_item_id: Optional[str] = None
     speculative_input_item_id: Optional[str] = None
     speculative_audio_duration_s: float = 0.0
+    last_speaker_id: str | None = None
 
 
 class RealtimeService:
@@ -394,14 +395,16 @@ class RealtimeService:
 
         cfg = st.runtime_config
         transcript = event.transcript
+        speaker_prefix = f"<<speaker:{st.last_speaker_id}>> " if st.last_speaker_id and transcript else ""
+        full_transcript = speaker_prefix + transcript
         if transcript:
             if same_speculative_turn and st.speculative_user_item_id:
-                replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, transcript)
+                replaced = cfg.chat.replace_user_message_text(st.speculative_user_item_id, full_transcript)
                 if not replaced:
-                    item = cfg.chat.add_item(make_user_message(transcript))
+                    item = cfg.chat.add_item(make_user_message(full_transcript))
                     st.speculative_user_item_id = item.id
             else:
-                item = cfg.chat.add_item(make_user_message(transcript))
+                item = cfg.chat.add_item(make_user_message(full_transcript))
                 st.speculative_user_item_id = item.id
         elif same_speculative_turn and st.speculative_user_item_id:
             cfg.chat.remove_user_message(st.speculative_user_item_id)

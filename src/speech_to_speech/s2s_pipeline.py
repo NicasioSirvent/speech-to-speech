@@ -63,6 +63,7 @@ from speech_to_speech.pipeline.queue_types import (
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.STT.transcription_notifier import TranscriptionNotifier
 from speech_to_speech.utils.thread_manager import ThreadManager
+from speech_to_speech.VAD.speaker_registry import SpeakerRegistry
 from speech_to_speech.VAD.vad_handler import VADHandler
 
 # Ensure that the necessary NLTK resources are available
@@ -491,6 +492,7 @@ def _build_realtime_pipeline_unit(
 
     vars(vad_kw)["text_output_queue"] = text_output_queue
     vars(vad_kw)["speculative_turns"] = speculative_turns
+    vars(vad_kw)["speaker_registry"] = SpeakerRegistry(device=module_kwargs.device)
     for kw in (
         lm_kw,
         responses_api_kw,

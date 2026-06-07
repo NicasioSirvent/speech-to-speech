@@ -138,8 +138,10 @@ class AudioHandler(RealtimeBaseHandler):
 
     def on_speech_stopped(self, conn_id: str, event: SpeechStoppedEvent) -> list[ServerEvent]:
         """Handle VAD speech_stopped: record duration and emit stopped event."""
+        st = self._state(conn_id)
         if event.duration_s:
-            self._state(conn_id).input_audio_duration_s = event.duration_s
+            st.input_audio_duration_s = event.duration_s
+        st.last_speaker_id = event.speaker_id
         return [
             InputAudioBufferSpeechStoppedEvent(
                 type="input_audio_buffer.speech_stopped",

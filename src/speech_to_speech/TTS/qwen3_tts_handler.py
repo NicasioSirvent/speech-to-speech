@@ -12,6 +12,7 @@ import math
 import re
 import tempfile
 import unicodedata
+from datetime import datetime
 from collections.abc import Callable
 from pathlib import Path
 from sys import platform
@@ -173,6 +174,9 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         self._initial_ref_audio = self.ref_audio
         self._voice_clone_prompt = None
         self._setup_voice_cache()
+        self._default_voice_clone_prompt = self._voice_clone_prompt
+        self._default_ref_audio = self.ref_audio
+        self._voice_map: dict[str, Any] = {}
         self.warmup()
 
     def _setup_faster(self, model_name: str, dtype: Any, attn_implementation: str) -> None:
@@ -478,7 +482,6 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
 
     def _setup_voice_cache(self) -> None:
         import hashlib
-        import torch
         from pathlib import Path
 
         voice_cache_dir = Path(__file__).parent / "voices"
@@ -518,6 +521,73 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
             "voice_clone_prompt": vcp,
             "ref_text": self.ref_text,
         }, str(cache_file))
+
+    def _parse_route_segments(self, text: str) -> list[tuple[str | None, str]]:
+        """Parse Dramaturgo Mode tags and split text into (route_target, text) segments.
+
+        Returns a list of tuples. If no <<route_to:X>> tags are found, returns
+        a single segment with None as the route target.
+
+        Example input: "<<route_to:dev>> Hola <<route_to:legal>> y adiós"
+        Returns: [
+            ("dev", "Hola"),
+            ("legal", "y adiós"),
+        ]
+        """
+        pattern = re.compile(r"<<\s*route_to\s*:\s*([\w.-]+)\s*>>")
+        parts = pattern.split(text)
+        segments: list[tuple[str | None, str]] = []
+
+        if not parts:
+            return [(None, text)]
+
+        # parts[0] = text before first tag (may be empty)
+        # parts[1] = first tag name
+        # parts[2] = text between first and second tag
+        # ...
+
+        leftover = parts[0].strip()
+        if leftover:
+            segments.append((None, leftover))
+
+        i = 1
+        while i < len(parts) - 1:
+            tag_name = parts[i].strip()
+            segment_text = parts[i + 1].strip()
+            if tag_name:
+                segments.append((tag_name, segment_text))
+            i += 2
+
+        return segments if segments else [(None, text)]
+
+    def register_voice(self, speaker_id: str, ref_audio_path: str | Path) -> None:
+        """Register a voice clone for a specific speaker ID."""
+        inner_model = self.model.model
+        prompt_items = inner_model.create_voice_clone_prompt(
+            ref_audio=str(ref_audio_path),
+            ref_text=self.ref_text,
+            x_vector_only_mode=self.xvec_only,
+        )
+        vcp = inner_model._prompt_items_to_voice_clone_prompt(prompt_items)
+        self._voice_map[speaker_id] = vcp
+        logger.info(f"Registered voice clone for speaker '{speaker_id}'")
+
+    def _apply_route_voice(self, speaker_id: str) -> None:
+        """Temporarily switch voice clone for routing."""
+        vcp = self._voice_map.get(speaker_id)
+        if vcp is not None:
+            self._voice_clone_prompt = vcp
+            self.ref_audio = None
+        else:
+            logger.warning(f"No voice registered for speaker '{speaker_id}', using default")
+
+    def _restore_default_voice(self) -> None:
+        """Restore default voice after routing."""
+        if self._default_voice_clone_prompt is not None:
+            self._voice_clone_prompt = self._default_voice_clone_prompt
+            self.ref_audio = None
+        else:
+            self.ref_audio = self._default_ref_audio
 
     def _resolve_speaker(self) -> Optional[str]:
         if self.speaker:
@@ -740,26 +810,46 @@ class Qwen3TTSHandler(BaseHandler[TTSIn, TTSOut]):
         model_type = self._model_type()
         self._apply_session_voice_override(model_type, runtime_config, response)
 
-        console.print(f"[green]ASSISTANT: {text}")
+        segments = self._parse_route_segments(text)
+        console.print(f"[green]ASSISTANT: (Dramaturgo: {len(segments)} segment(s))" if len(segments) > 1 else f"[green]ASSISTANT: {text}")
 
+        first_audio = True
         try:
-            if self.ref_audio or self._voice_clone_prompt:
-                audio_iter = self._process_voice_clone(text)
-            elif model_type == "custom_voice":
-                audio_iter = self._process_custom_voice(text)
-            elif model_type == "voice_design":
-                audio_iter = self._process_voice_design(text)
-            else:
-                raise ValueError(
-                    "Qwen3-TTS Base model requires ref_audio for voice cloning. "
-                    "Provide qwen3_tts_ref_audio or use a CustomVoice/VoiceDesign model."
-                )
-            first_audio = True
-            for audio_chunk in audio_iter:
-                if first_audio:
-                    self._log_first_audio_latency(tts_input)
-                    first_audio = False
-                yield audio_chunk
+            for route_target, segment_text in segments:
+                seg = segment_text.strip()
+                if not seg:
+                    continue
+
+                model_type = self._model_type()
+                self._apply_session_voice_override(model_type, runtime_config, response)
+
+                if route_target and route_target in self._voice_map:
+                    self._apply_route_voice(route_target)
+                    logger.info("Routing to voice: %s", route_target)
+
+                if self.ref_audio or self._voice_clone_prompt:
+                    audio_iter = self._process_voice_clone(seg)
+                elif model_type == "custom_voice":
+                    audio_iter = self._process_custom_voice(seg)
+                elif model_type == "voice_design":
+                    audio_iter = self._process_voice_design(seg)
+                else:
+                    raise ValueError(
+                        "Qwen3-TTS Base model requires ref_audio for voice cloning. "
+                        "Provide qwen3_tts_ref_audio or use a CustomVoice/VoiceDesign model."
+                    )
+
+                for audio_chunk in audio_iter:
+                    if first_audio:
+                        self._log_first_audio_latency(tts_input)
+                        first_audio = False
+                    yield audio_chunk
+
+                if route_target:
+                    self._restore_default_voice()
+
+                if route_target and len(segments) > 1:
+                    logger.info("Segment done. Moving to next assistant.")
         except Exception as e:
             logger.error(f"Error during Qwen3-TTS generation: {e}", exc_info=True)
 

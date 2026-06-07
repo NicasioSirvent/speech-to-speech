@@ -42,6 +42,7 @@ class SpeechStoppedEvent(PipelineEvent):
     audio_end_ms: int = 0
     turn_id: str | None = None
     turn_revision: int | None = None
+    speaker_id: str | None = None
 
 
 # ── Transcription events (TranscriptionNotifier) ─────────────────────

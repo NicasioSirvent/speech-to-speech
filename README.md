@@ -365,6 +365,19 @@ speech-to-speech \
     --enable_live_transcription
 ```
 
+### Multi-User & Multi-Assistant
+
+The pipeline supports multiple users and assistants in a shared session with automatic speaker identification and dynamic voice routing.
+
+- **Speaker Registry:** Uses eCAPA-Voice (SpeechBrain) for real-time voice fingerprinting. Identifies speakers as they talk.
+- **Dynamic Voice Routing:** The LLM can route responses to specific voices using `<<route_to:X>>` tags.
+- **Voice Cloning:** Register multiple voice clones with `tts.register_voice("name", "/path/to/audio.wav")`.
+- **System Prompt:** Automatically includes routing instructions so the LLM knows how to use voice tags.
+
+**Quick flow:** Microphone → VAD + Speaker ID → STT → `<<speaker:X>>` tag → LLM → `<<route_to:X>>` → TTS switches voice → Audio
+
+For full architecture details, see [`docs/multiuser.md`](./docs/multiuser.md).
+
 ### Multi-language Support
 
 The pipeline currently supports English, French, Spanish, Chinese, Japanese, and Korean.  

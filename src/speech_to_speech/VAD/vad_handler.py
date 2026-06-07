@@ -19,6 +19,7 @@ from speech_to_speech.pipeline.queue_types import TextEventItem
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 from speech_to_speech.utils.utils import int2float
 from speech_to_speech.VAD.vad_iterator import VADIterator
+from speech_to_speech.VAD.speaker_registry import SpeakerRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         text_output_queue: Queue[TextEventItem] | None = None,
         speculative_turns: SpeculativeTurnTracker | None = None,
         speculative_reopen_ms: int = 1000,
+        speaker_registry: SpeakerRegistry | None = None,
     ) -> None:
         self.should_listen = should_listen
         self.sample_rate = sample_rate
@@ -66,6 +68,7 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
         self.text_output_queue = text_output_queue
         self.speculative_turns = speculative_turns
         self.speculative_reopen_ms = speculative_reopen_ms
+        self.speaker_registry = speaker_registry
         self._last_turn_detection: dict | None = None
         self.model, _ = torch.hub.load(
             "snakers4/silero-vad",
@@ -585,8 +588,11 @@ class VADHandler(BaseHandler[VADIn, VADOut]):
                 self._log_speech_ends += 1
                 self.should_listen.clear()
                 logger.info(f"Speech ended ({duration_ms:.0f}ms), stop listening")
+                speaker_id = None
+                if self.speaker_registry:
+                    speaker_id = self.speaker_registry.identify(array)
                 if self.text_output_queue:
-                    self.text_output_queue.put(SpeechStoppedEvent(duration_s=duration_ms / 1000.0, audio_end_ms=end_ms))
+                    self.text_output_queue.put(SpeechStoppedEvent(duration_s=duration_ms / 1000.0, audio_end_ms=end_ms, speaker_id=speaker_id))
                 if self.audio_enhancement:
                     array = self._apply_audio_enhancement(array)
                 yield VADAudio(audio=array)

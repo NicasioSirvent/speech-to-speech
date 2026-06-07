@@ -99,8 +99,12 @@ setsid python3 -m http.server 8080 --directory /home/n/dev/speech-to-speech/clie
 |---------|-----------|
 | `api/openai_realtime/handlers/audio.py` | `encode_audio_chunk` async + thread pool |
 | `api/openai_realtime/websocket_router.py` | Send loop, batching, `MAX_AUDIO_BATCH_BYTES` |
-| `TTS/qwen3_tts_handler.py` | Voice cache, inter-turn pause, streaming chunks, temperature |
-| `VAD/vad_handler.py` | Silero VAD, `min_silence_ms`, speech detection |
+| `api/openai_realtime/service.py` | `ConnState.last_speaker_id`, `<<speaker:X>>` en user messages |
+| `TTS/qwen3_tts_handler.py` | Voice cache, voice map, dynamic routing, streaming chunks |
+| `VAD/vad_handler.py` | Silero VAD, `min_silence_ms`, `SpeakerRegistry` identification |
+| `VAD/speaker_registry.py` | eCAPA-Voice fingerprinting, calibration, identification |
+| `pipeline/events.py` | `SpeechStoppedEvent` + `speaker_id` |
+| `LLM/voice_prompt.py` | System prompt con `VOICE_SYSTEM_PROMPT_SPEAKER_ROUTING` |
 | `client/index.html` | Web UI, echo prevention, cancel button |
 
 ## Comandos de Arranque
@@ -125,11 +129,17 @@ setsid bash -c 'export OPENAI_API_KEY="not-needed" && /home/n/dev/speech-to-spee
 - ✅ Cancel button works (stops TTS + clears server queues)
 - ✅ RTF ~1.2–1.8 (under load)
 - ✅ Concurrent slots: 4 (llama-server), 1 (pipeline)
+- ✅ **Speaker Registry:** eCAPA-Voice fingerprinting integrado en VAD loop (`last_speaker_id`)
+- ✅ **Dynamic Routing:** LLM genera `<<route_to:assistant>>` → TTS cambia voz dinámicamente
+- ✅ **System Prompt:** instruciones de routing con lista de asistentes (`default`, `dev_jefe`, `abogado`)
+- ✅ **Voice Map:** `Qwen3TTSHandler` soporta `register_voice()` y switching automático
+- ✅ **Dramaturgo Mode:** TTS procesa múltiples `<<route_to:X>>` por respuesta, cambiando voz secuencialmente
+- ✅ **Separación:** `<<speaker:usuario>>` vs `<<route_to:asistente>>`. No es mirror voice.
 
-## Roadmap (Brainstorm / En revisión)
+## Roadmap (En progreso)
 
-- **Speaker Registry:** fingerprinting para identificar usuarios y asistentes
-- **Multi-user:** calibración automática de nuevas voces
-- **Multi-assistant:** switch de assistant + voz en runtime
-- **ESP32:** hardware client con I2S mic/speaker
+- **Auto-enrollment:** calibración automática de nuevas voces (`SpeakerRegistry` + `TTS.register_voice()`)
+- **Threshold adaptativo:** ajustar distancia entre embeddings automáticamente
+- **Dramaturgo Mode:** asistentes hablando entre ellos (XML multi-speaker)
+- **ESP32:** hardware client con I2S mic/speaker (ver `docs/esp32.md`)
 - **Multiuser docs:** ver `docs/multiuser.md`
